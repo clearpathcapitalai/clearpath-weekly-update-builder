@@ -224,6 +224,96 @@ function ParaCard({ k, p, weekEnding, focus, hint, onChange, onRegened, busy }) 
   );
 }
 
+// ───────────────────────────────────────────────────────── WhatsApp inbox
+
+function WhatsAppDrawer({ onClose, onUseAsFocus }) {
+  const [msgs, setMsgs] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [err, setErr] = useState(null);
+
+  const load = useCallback(async () => {
+    try {
+      const r = await fetch("/api/whatsapp/messages");
+      if (!r.ok) throw new Error("Request failed: " + r.status);
+      const j = await r.json();
+      setMsgs(j.messages || []);
+      setErr(null);
+    } catch (e) {
+      setErr(e.message);
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    load();
+    const t = setInterval(load, 15000);
+    return () => clearInterval(t);
+  }, [load]);
+
+  const onDelete = async (id) => {
+    await fetch(`/api/whatsapp/messages/${id}`, { method: "DELETE" });
+    setMsgs(ms => ms.filter(m => m.id !== id));
+  };
+
+  return (
+    <div className="history-overlay" onClick={onClose}>
+      <div className="history-drawer" onClick={e => e.stopPropagation()}>
+        <div className="history-head">
+          <div>
+            <div className="history-title">WhatsApp Inbox</div>
+            <div className="history-sub">
+              {msgs.length} message{msgs.length !== 1 ? "s" : ""} · auto-refreshes every 15 s
+            </div>
+          </div>
+          <div style={{ display: "flex", gap: 8 }}>
+            <button type="button" className="btn-ghost btn-sm" onClick={load}>Refresh</button>
+            <button type="button" className="btn-ghost btn-sm" onClick={onClose}>Close</button>
+          </div>
+        </div>
+        <div className="history-list">
+          {loading ? (
+            <div className="history-empty"><Spinner /></div>
+          ) : err ? (
+            <div className="status status-error" style={{ margin: "12px" }}>{err}</div>
+          ) : msgs.length === 0 ? (
+            <div className="history-empty">
+              No messages yet.<br />
+              Configure your Twilio WhatsApp number's inbound webhook to:<br />
+              <code style={{ fontSize: 11, color: "var(--accent)", marginTop: 6, display: "block" }}>
+                POST /webhook/whatsapp
+              </code>
+            </div>
+          ) : msgs.map(msg => (
+            <div className="history-item" key={msg.id}>
+              <div className="history-item-main">
+                <div className="history-item-week">{msg.from}</div>
+                <div className="history-item-meta">
+                  {new Date(msg.receivedAt).toLocaleString()}
+                  {msg.numMedia > 0
+                    ? <> · {msg.numMedia} media file{msg.numMedia !== 1 ? "s" : ""}</>
+                    : null}
+                </div>
+                {msg.body
+                  ? <div style={{ fontSize: 13, color: "var(--ink)", marginTop: 5, lineHeight: 1.45 }}>{msg.body}</div>
+                  : null}
+              </div>
+              <div className="history-item-actions">
+                {msg.body
+                  ? <button type="button" className="btn-ghost btn-sm" onClick={() => onUseAsFocus(msg.body)}>
+                      Use as focus
+                    </button>
+                  : null}
+                <button type="button" className="btn-ghost btn-sm danger" onClick={() => onDelete(msg.id)}>Delete</button>
+              </div>
+            </div>
+          ))}
+        </div>
+      </div>
+    </div>
+  );
+}
+
 // ───────────────────────────────────────────────────────── App
 
 function App() {
@@ -248,12 +338,28 @@ function App() {
   const [history, setHistory] = useState(window.cpHistory.read());
   const [repeatPrev, setRepeatPrev] = useState(false);
   const [focus, setFocus] = useState(last?.focus || "");
+  const [whatsappOpen, setWhatsappOpen] = useState(false);
+  const [waMsgCount, setWaMsgCount] = useState(0);
 
   const html = useMemo(() => window.renderWeeklyEmail(data), [data]);
 
   useEffect(() => {
     window.cpHistory.setLast({ data, focus });
   }, [data, focus]);
+
+  useEffect(() => {
+    const poll = async () => {
+      try {
+        const r = await fetch("/api/whatsapp/messages");
+        if (!r.ok) return;
+        const j = await r.json();
+        setWaMsgCount((j.messages || []).length);
+      } catch {}
+    };
+    poll();
+    const t = setInterval(poll, 30000);
+    return () => clearInterval(t);
+  }, []);
 
   const setField = (path, value) => setData(d => {
     const next = JSON.parse(JSON.stringify(d));
@@ -339,6 +445,9 @@ function App() {
           </div>
         </div>
         <div className="top-actions">
+          <button type="button" className="btn-ghost" onClick={() => setWhatsappOpen(true)}>
+            WhatsApp {waMsgCount > 0 ? <span className="count-pill">{waMsgCount}</span> : null}
+          </button>
           <button type="button" className="btn-ghost" onClick={() => setHistoryOpen(true)}>
             History <span className="count-pill">{history.length}</span>
           </button>
@@ -487,6 +596,17 @@ function App() {
             </div>
           </div>
         </div>
+      ) : null}
+
+      {whatsappOpen ? (
+        <WhatsAppDrawer
+          onClose={() => setWhatsappOpen(false)}
+          onUseAsFocus={(text) => {
+            setFocus(text);
+            setWhatsappOpen(false);
+            setStatus({ type: "ok", msg: "WhatsApp message applied as this week's focus." });
+          }}
+        />
       ) : null}
     </div>
   );
